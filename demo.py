@@ -79,10 +79,10 @@ Key Idea: Gravity pulls everything towards the center of mass."""
     for i, vec in enumerate(embeddings):
         chunk = chunks[i]
         search_engine.index_chunk(
-            f"chunk-{i}",       # chunk id
-            chunks[i].text,     # text
-            vec,                # vector
-            chunks[i].token_count  # token_count if function supports
+            f"chunk-{i}",
+            chunks[i].text,
+            vec,
+            chunks[i].token_count
         )
         # Show snippet
         vec_preview = ", ".join([f"{x:.4f}" for x in vec[:3]])

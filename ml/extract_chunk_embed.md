@@ -54,7 +54,7 @@ This creates a note, runs extraction + chunking, and prints the `note_id`.
 ## Script (pipeline task)
 
 ```
-tasks.py (chunk_text_task)
+extraction_tasks.py (chunk_text_task)
 ```
 
 ## Behavior

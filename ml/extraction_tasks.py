@@ -1,5 +1,5 @@
 """
-tasks.py
+extraction_tasks.py
 
 Extraction and chunking pipeline tasks for notes.
 """
@@ -50,6 +50,14 @@ except Exception:  # pragma: no cover - optional dependency for runtime use
 REPO_ROOT = Path(__file__).resolve().parents[1]
 UPLOADS_DIR = Path(os.environ.get("NOTE_AGENT_UPLOADS_DIR", REPO_ROOT / "uploads"))
 DERIVED_DIR = Path(os.environ.get("NOTE_AGENT_DERIVED_DIR", REPO_ROOT / "derived"))
+
+if spacy is not None:
+    try:
+        _NLP = spacy.load("en_core_web_sm", exclude=["ner", "tagger", "lemmatizer"])
+    except Exception:
+        _NLP = None
+else:
+    _NLP = None
 
 
 def _resolve_pdf_path(file_path: str) -> Path:
@@ -312,10 +320,9 @@ def chunk_text_task(
         delete_spans(note_id)
         return 0
 
-    if spacy is None:
-        raise RuntimeError("spaCy is not installed.")
-    nlp = spacy.load("en_core_web_sm", exclude=["ner", "tagger", "lemmatizer"])
-    doc = nlp(text)
+    if _NLP is None:
+        raise RuntimeError("spaCy model is not available. Install spaCy and download en_core_web_sm.")
+    doc = _NLP(text)
 
     encoding = tiktoken.get_encoding(encoding_name)
 

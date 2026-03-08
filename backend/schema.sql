@@ -49,8 +49,14 @@ CREATE TABLE IF NOT EXISTS objects (
     canonical_text TEXT NOT NULL,
     confidence FLOAT,
     status TEXT DEFAULT 'active', -- 'active', 'merged_into_{id}'
+    embedding VECTOR(384),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Migration helper for existing deployments
+ALTER TABLE objects ADD COLUMN IF NOT EXISTS embedding VECTOR(384);
+
+CREATE INDEX IF NOT EXISTS objects_embedding_idx ON objects USING hnsw (embedding vector_cosine_ops);
 
 -- 5. Object Mentions Table (Links Objects to Spans)
 CREATE TABLE IF NOT EXISTS object_mentions (

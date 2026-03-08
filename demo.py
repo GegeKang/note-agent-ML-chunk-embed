@@ -198,10 +198,48 @@ def run_demo():
     conn.commit()
     conn.close()
 
+    input(f"\n{Colors.WARNING}Press [ENTER] to execute Stage 5 (Entity Resolution)...{Colors.ENDC}")
+
+    # STAGE 5
+    print_step("STAGE 5: Entity Resolution",
+               "Comparing new objects against existing Knowledge Graph nodes to detect duplicates.")
+
+    from ml.entity_resolution import EntityResolver
+    resolver = EntityResolver(DB_CONN)
+    new_obj_ids = [obj.id for obj in result.objects]
+
+    # Seed a pre-existing object with identical canonical text to the first extracted
+    # object so the demo reliably demonstrates auto-merge (similarity = 1.0 → merge).
+    if result.objects:
+        seed_obj = result.objects[0]
+        seed_embedding = resolver._embed_texts([seed_obj.canonical_text])[0]
+        vec_str = "[" + ",".join(map(str, seed_embedding)) + "]"
+        seed_conn = psycopg2.connect(DB_CONN)
+        seed_cur = seed_conn.cursor()
+        seed_cur.execute("DELETE FROM objects WHERE id = 'pre_existing_1'")
+        seed_cur.execute(
+            "INSERT INTO objects (id, type, canonical_text, confidence, status, workspace_id, embedding) "
+            "VALUES ('pre_existing_1', %s, %s, 0.9, 'active', 'ws_demo', %s::vector)",
+            (seed_obj.type, seed_obj.canonical_text, vec_str)
+        )
+        seed_conn.commit()
+        seed_conn.close()
+        print(f"  Pre-existing seed: [{seed_obj.type}] \"{seed_obj.canonical_text[:70]}\"")
+
+    print("Calling: EntityResolver.resolve_entities_task()...")
+    stats = resolver.resolve_entities_task(new_obj_ids, workspace_id='ws_demo')
+
+    print(f"{Colors.OKGREEN}✓ Entity Resolution complete.{Colors.ENDC}")
+    print(f"  Merged:    {stats['merged']}")
+    print(f"  Flagged:   {stats['flagged']}")
+    print(f"  Unchanged: {stats['unchanged']}")
+
+    print(f"\n{Colors.OKCYAN}Verify in psql:")
+    print(f"  SELECT id, status FROM objects WHERE workspace_id = 'ws_demo';")
+    print(f"  SELECT type, src_object_id, dst_object_id FROM links WHERE type = 'SameAs';")
+    print(f"  SELECT type, severity, payload FROM insights WHERE type = 'consolidation_opportunity';{Colors.ENDC}")
+
     print(f"\n{Colors.HEADER}{Colors.BOLD}=== DEMO COMPLETE ==={Colors.ENDC}\n")
-    print(f"{Colors.OKCYAN}The objects and links have been saved to Postgres! Run the following to check:")
-    print(f"  psql -d note_agent -c \"SELECT id, type, canonical_text FROM objects WHERE workspace_id = 'ws_demo';\"")
-    print(f"  psql -d note_agent -c \"SELECT src_object_id, type, dst_object_id FROM links WHERE workspace_id = 'ws_demo';\"{Colors.ENDC}\n")
 
 if __name__ == "__main__":
     run_demo()

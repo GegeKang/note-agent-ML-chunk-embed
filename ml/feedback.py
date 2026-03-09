@@ -180,7 +180,7 @@ def get_review_stats() -> Dict[str, int]:
 
 def get_few_shot_examples(limit: int = 5) -> List[Dict[str, str]]:
     """
-    Retrieve corrected reviews to use as few-shot examples in prompts.
+    Retrieve corrected and accepted reviews to use as few-shot examples in prompts.
     Prioritizes corrections (where human changed the type) since those
     are most informative for improving the LLM.
 
@@ -188,14 +188,15 @@ def get_few_shot_examples(limit: int = 5) -> List[Dict[str, str]]:
         limit: Maximum number of examples to return.
 
     Returns:
-        List of dicts with keys: original_text, original_type, corrected_type, corrected_text
+        List of dicts with keys: original_text, original_type, corrected_type, corrected_text, status
     """
     init_feedback_db()
     with _connect() as conn:
         # Prioritize corrections (type changes are most valuable)
         rows = conn.execute(
             """
-            SELECT original_text, original_type, corrected_type, corrected_text
+            SELECT original_text, original_type, corrected_type, corrected_text,
+                   'corrected' as status
             FROM human_reviews
             WHERE status = 'corrected'
               AND corrected_type IS NOT NULL
@@ -215,7 +216,8 @@ def get_few_shot_examples(limit: int = 5) -> List[Dict[str, str]]:
                 """
                 SELECT original_text, original_type,
                        original_type as corrected_type,
-                       original_text as corrected_text
+                       original_text as corrected_text,
+                       'accepted' as status
                 FROM human_reviews
                 WHERE status = 'accepted'
                 ORDER BY reviewed_at DESC
@@ -224,6 +226,20 @@ def get_few_shot_examples(limit: int = 5) -> List[Dict[str, str]]:
                 (remaining,),
             ).fetchall()
             examples.extend(dict(r) for r in accepted_rows)
+
+        # Also include rejected examples as negative examples
+        rejected_rows = conn.execute(
+            """
+            SELECT original_text, original_type, original_type as corrected_type,
+                   original_text as corrected_text, 'rejected' as status
+            FROM human_reviews
+            WHERE status = 'rejected'
+            ORDER BY reviewed_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        examples.extend(dict(r) for r in rejected_rows)
 
         return examples
 
@@ -246,8 +262,14 @@ def format_few_shot_block(examples: List[Dict[str, str]]) -> str:
         original_type = ex["original_type"]
         corrected_type = ex.get("corrected_type") or original_type
         text = ex.get("corrected_text") or ex["original_text"]
+        status = ex.get("status", "")
 
-        if original_type != corrected_type:
+        if status == "rejected":
+            # This was rejected — tell the LLM not to extract fragments like this
+            lines.append(f"Example {i}:")
+            lines.append(f'  Text: "{text}"')
+            lines.append(f"  DO NOT extract this — it is a noisy fragment, not a valid knowledge object.")
+        elif original_type != corrected_type:
             # This was a correction — show the mistake and fix
             lines.append(f"Example {i}:")
             lines.append(f'  Text: "{text}"')

@@ -197,8 +197,10 @@ class LLMExtractor:
         return chunks
 
     def _cache_path_for_chunk(self, chunk_text: str) -> Path:
-        """Return a deterministic cache file path for a chunk based on its SHA256 hash."""
-        hash_digest = hashlib.sha256(chunk_text.encode('utf-8')).hexdigest()
+        """Return a deterministic cache file path for a chunk based on its SHA256 hash.
+        Includes the few-shot block so that new human corrections invalidate old cache."""
+        cache_input = chunk_text + (self._few_shot_block or "")
+        hash_digest = hashlib.sha256(cache_input.encode('utf-8')).hexdigest()
         cache_dir = Path(__file__).parent.parent / "cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir / f"{hash_digest}.json"

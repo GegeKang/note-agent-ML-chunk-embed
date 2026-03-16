@@ -125,3 +125,4 @@ class HybridSearchEngine:
         merged = [{"id": sid, "text": texts[sid], "score": score} for sid, score in scores.items()]
         merged.sort(key=lambda x: x["score"], reverse=True) # sort by descending score
         return merged
+

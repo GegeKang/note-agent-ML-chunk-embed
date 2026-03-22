@@ -1,12 +1,20 @@
+# Environment & secrets
 .env
-ml/cache/
-cache/
-__pycache__/
-ml/__pycache__/
-*.db
 
-.DS_Store
-
+# Virtual environments
 .venv/
 venv/
 env/
+
+# Cache & build artifacts
+__pycache__/
+ml/__pycache__/
+cache/
+ml/cache/
+
+# Data & databases
+*.db
+
+# Tool & editor config
+.claude/
+.DS_Store

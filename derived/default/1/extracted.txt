@@ -14,3 +14,12 @@ Key assumptions:
 Open questions:
 - What is our exact go-to-market timeline?
 - Do we have all the regulatory approvals needed for EU expansion?
+
+Follow-up Notes - March 5th Update:
+- CORRECTION: The Q1 Budget has NOT been approved. The board rejected the initial proposal and requested a revised budget by March 20th.
+- CORRECTION: Engineering capacity is NOT available. The team is fully committed to existing projects through Q2 and cannot support new hires onboarding.
+
+Engineering Sync Notes - March 6th:
+- We need to ship the Quantum Engine by mid-March.
+- Plan to onboard 5 additional backend engineers to grow the team.
+- EU expansion should prioritize Germany and France as key markets.

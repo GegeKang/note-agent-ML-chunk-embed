@@ -45,9 +45,14 @@ The primary script for orchestrating and verifying out the ML transformation sta
 You MUST define your Groq or OpenAI API key before running the structured extraction (Stage 4).
 ```bash
 export GROQ_API_KEY="your-api-key-here"
-python3 demo.py
+$env:GROQ_API_KEY=""     
+python demo.py
 ```
-
+or
+```bash
+$env:GROQ_API_KEY=""     
+python demo.py
+```
 ## 🛠️ Developer Tools (`scripts/`)
 
 | Script | Description |

@@ -10,3 +10,5 @@ tiktoken
 numpy
 pandas
 pytest
+psycopg2-binary
+spacy

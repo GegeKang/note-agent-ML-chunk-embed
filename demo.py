@@ -1,8 +1,10 @@
 import os
 import sys
 import time
+import json
 import textwrap
 import psycopg2
+from datetime import datetime, timezone, timedelta
 
 from ml.extraction_tasks import extract_text_task, chunk_text_task
 from backend.embedding_pipeline import EmbeddingPipeline
@@ -21,7 +23,7 @@ class Colors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-DB_CONN = "dbname=note_agent user=postgres host=localhost"
+DB_CONN = "dbname=note_agent user=postgres password=postgres host=localhost"
 
 # Check for API keys needed for Stage 4
 API_KEY = os.environ.get("OPENAI_API_KEY") or os.environ.get("GROQ_API_KEY")
@@ -56,6 +58,15 @@ Key assumptions:
 Open questions:
 - What is our exact go-to-market timeline?
 - Do we have all the regulatory approvals needed for EU expansion?
+
+Follow-up Notes - March 5th Update:
+- CORRECTION: The Q1 Budget has NOT been approved. The board rejected the initial proposal and requested a revised budget by March 20th.
+- CORRECTION: Engineering capacity is NOT available. The team is fully committed to existing projects through Q2 and cannot support new hires onboarding.
+
+Engineering Sync Notes - March 6th:
+- We need to ship the Quantum Engine by mid-March.
+- Plan to onboard 5 additional backend engineers to grow the team.
+- EU expansion should prioritize Germany and France as key markets.
 """
     with open(sample_path, "w") as f:
         f.write(demo_text.strip())
@@ -121,15 +132,31 @@ def run_demo():
     time.sleep(1)
     
     num_spans = chunk_text_task(note_id, window_size=50, overlap=10, min_tokens=20)
-    
-    str_note_id = str(note_id)
+
+    # Bridge spans from SQLite → PostgreSQL so EmbeddingPipeline can find them
+    import sqlite3
+    with sqlite3.connect("/tmp/noteagent/test.db") as s_conn:
+        s_conn.row_factory = sqlite3.Row
+        sqlite_spans = s_conn.execute(
+            "SELECT id, text, token_count, start_char, end_char FROM spans WHERE note_id = ?", (note_id,)
+        ).fetchall()
+
+    cur.execute("DELETE FROM spans WHERE note_id = 'demo_note_1'")
+    for s in sqlite_spans:
+        cur.execute(
+            "INSERT INTO spans (id, note_id, start_char, end_char, text, token_count) VALUES (%s, 'demo_note_1', %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+            (f"span_demo_{s['id']}", s['start_char'], s['end_char'], s['text'], s['token_count'])
+        )
+    conn.commit()
+
+    str_note_id = 'demo_note_1'
     cur.execute("SELECT token_count, text FROM spans WHERE note_id = %s ORDER BY start_char", (str_note_id,))
     spans = cur.fetchall()
     print(f"{Colors.OKGREEN}✓ Created {num_spans} chunks.{Colors.ENDC}\n")
-    
+
     for idx, (tokens, text) in enumerate(spans[:3]):
         print(f"  {Colors.BOLD}[Chunk {idx:02d}] ({tokens} tokens){Colors.ENDC}: {textwrap.shorten(text, width=80)}")
-    
+
     if len(spans) > 3:
         print("  ... (more truncated)")
 
@@ -141,7 +168,7 @@ def run_demo():
     time.sleep(1)
     
     embedder = EmbeddingPipeline(DB_CONN)
-    embedder.embed_spans_task(note_id)
+    embedder.embed_spans_task(str_note_id)
     
     cur.execute("SELECT embedding IS NOT NULL FROM spans WHERE note_id = %s LIMIT 3", (str_note_id,))
     emb_results = cur.fetchall()
@@ -238,6 +265,109 @@ def run_demo():
     print(f"  SELECT id, status FROM objects WHERE workspace_id = 'ws_demo';")
     print(f"  SELECT type, src_object_id, dst_object_id FROM links WHERE type = 'SameAs';")
     print(f"  SELECT type, severity, payload FROM insights WHERE type = 'consolidation_opportunity';{Colors.ENDC}")
+
+    input(f"\n{Colors.WARNING}Press [ENTER] to execute Stage 6 (Hybrid Search)...{Colors.ENDC}")
+
+    # STAGE 6
+    print_step("STAGE 6: Hybrid Search", "Combining vector similarity and keyword matching via Reciprocal Rank Fusion.")
+
+    from ml.search import HybridSearchEngine
+    from ml.graph import KnowledgeGraph
+
+    # Build knowledge graph from extracted objects
+    kg = KnowledgeGraph()
+    kg.add_objects(result.objects)
+    kg.add_links(result.links)
+
+    # Build search engine in in-memory mode (no storage adapter needed)
+    search_engine = HybridSearchEngine(embedding_generator=embedder, graph=kg)
+
+    # Load spans from SQLite (chunk_text_task writes to SQLite, not Postgres)
+    import sqlite3 as _sqlite3
+    with _sqlite3.connect("/tmp/noteagent/test.db") as s_conn:
+        s_conn.row_factory = _sqlite3.Row
+        rows = s_conn.execute(
+            "SELECT id, text, token_count FROM spans WHERE note_id = ?", (note_id,)
+        ).fetchall()
+    spans_data = [(row["id"], row["text"], row["token_count"]) for row in rows]
+
+    print(f"Indexing {len(spans_data)} span(s) into search engine...")
+    for span_id, text, token_count in spans_data:
+        vec = embedder.model.encode(text).tolist()
+        search_engine.index_chunk(span_id, text, vec, token_count or 0)
+
+    demo_query = "When is the Quantum Engine product launching?"
+    print(f"\nQuery: \"{demo_query}\"")
+    search_results = search_engine.search(demo_query, top_k=3)
+
+    print(f"\n{Colors.OKGREEN}✓ Top {len(search_results)} result(s):{Colors.ENDC}")
+    for i, r in enumerate(search_results):
+        print(f"  {Colors.BOLD}[{i+1}] score={r.score:.4f}  source={r.source}{Colors.ENDC}")
+        print(f"      {textwrap.shorten(r.text, width=90)}")
+
+    input(f"\n{Colors.WARNING}Press [ENTER] to execute Stage 7 (Contradiction Detection)...{Colors.ENDC}")
+
+    # STAGE 7
+    print_step("STAGE 7: Contradiction Detection", "Scanning the Knowledge Graph for conflicting claims.")
+
+    from ml.intelligence import IntelligenceLayer
+
+    intel = IntelligenceLayer(kg)
+    contradictions = intel.detect_contradictions()
+
+    if contradictions:
+        print(f"\n{Colors.OKGREEN}✓ Found {len(contradictions)} contradiction(s):{Colors.ENDC}")
+        for c in contradictions:
+            print(f"  • [{Colors.FAIL}HIGH{Colors.ENDC}] \"{c['source_text'][:60]}\"")
+            print(f"    ↔ \"{c['target_text'][:60]}\"")
+    else:
+        print(f"\n{Colors.OKGREEN}✓ No contradictions detected.{Colors.ENDC}")
+
+    input(f"\n{Colors.WARNING}Press [ENTER] to execute Stage 8 (Stale Thread Detection)...{Colors.ENDC}")
+
+    # STAGE 8
+    print_step("STAGE 8: Stale Thread Detection", "Finding open Questions, Tasks, and Ideas that haven't been addressed.")
+
+    # Simulate objects being 60 days old so threads appear stale in the demo
+    old_date = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+    for node_id in kg.graph.nodes:
+        kg.graph.nodes[node_id]['created_at'] = old_date
+
+    intel_stale = IntelligenceLayer(kg)
+    stale_insights = intel_stale.detect_stale_threads()
+
+    if stale_insights:
+        print(f"\n{Colors.OKGREEN}✓ Found {len(stale_insights)} stale thread(s):{Colors.ENDC}")
+        for ins in stale_insights:
+            p = ins['payload']
+            color = Colors.FAIL if ins['severity'] == 'high' else Colors.WARNING
+            print(f"  • [{color}{ins['severity'].upper()}{Colors.ENDC}] [{p['object_type']}] \"{p['object_text'][:70]}\" ({p['age_days']}d old)")
+    else:
+        print(f"\n{Colors.OKGREEN}✓ No stale threads detected.{Colors.ENDC}")
+
+    input(f"\n{Colors.WARNING}Press [ENTER] to execute Stage 9 (Consolidation Detection)...{Colors.ENDC}")
+
+    # STAGE 9
+    print_step("STAGE 9: Consolidation Detection", "Reviewing near-duplicate entities flagged during Entity Resolution (Stage 5).")
+
+    conn = psycopg2.connect(DB_CONN)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT severity, payload FROM insights WHERE type = 'consolidation_opportunity' AND workspace_id = 'ws_demo'"
+    )
+    consolidation_rows = cur.fetchall()
+    conn.close()
+
+    if consolidation_rows:
+        print(f"\n{Colors.OKGREEN}✓ Found {len(consolidation_rows)} consolidation opportunity(ies):{Colors.ENDC}")
+        for severity, payload in consolidation_rows:
+            p = json.loads(payload) if isinstance(payload, str) else payload
+            color = Colors.FAIL if severity == 'high' else Colors.WARNING
+            print(f"  • [{color}{severity.upper()}{Colors.ENDC}] similarity={p.get('similarity', '?')}")
+            print(f"    {p.get('src_id', '?')[:16]}... ↔ {p.get('dst_id', '?')[:16]}...")
+            print(f"    Reason: {p.get('reason', '')}")
+    else:
+        print(f"\n  No consolidation opportunities flagged — all entities were auto-merged or unique.")
 
     print(f"\n{Colors.HEADER}{Colors.BOLD}=== DEMO COMPLETE ==={Colors.ENDC}\n")
 

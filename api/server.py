@@ -77,6 +77,36 @@ def _get_embed_model():
     return _EMBED_MODEL
 
 
+_LLM_CLIENT = None
+_LLM_MODEL = None
+_LLM_LOCK = threading.Lock()
+
+
+def _get_llm():
+    """Build an OpenAI-compatible client pointed at Groq or OpenAI, matching
+    the selection logic used by ml/extraction.py."""
+    global _LLM_CLIENT, _LLM_MODEL
+    if _LLM_CLIENT is not None:
+        return _LLM_CLIENT, _LLM_MODEL
+    with _LLM_LOCK:
+        if _LLM_CLIENT is not None:
+            return _LLM_CLIENT, _LLM_MODEL
+        from openai import OpenAI
+        openai_key = os.getenv("OPENAI_API_KEY")
+        groq_key = os.getenv("GROQ_API_KEY")
+        key = openai_key or groq_key
+        if not key:
+            raise HTTPException(status_code=503, detail="no LLM API key configured on ML service")
+        if key.startswith("sk-"):
+            base_url = "https://api.openai.com/v1"
+            _LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        else:
+            base_url = "https://api.groq.com/openai/v1"
+            _LLM_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        _LLM_CLIENT = OpenAI(api_key=key, base_url=base_url)
+        return _LLM_CLIENT, _LLM_MODEL
+
+
 def _get_spacy():
     global _NLP
     if _NLP is None:
@@ -224,6 +254,30 @@ class SearchHit(BaseModel):
 
 class SearchResp(BaseModel):
     hits: List[SearchHit]
+
+
+class ChatSpan(BaseModel):
+    id: str
+    text: str
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ChatReq(BaseModel):
+    question: str
+    spans: List[ChatSpan] = []
+    history: List[ChatMessage] = []
+    max_tokens: int = 600
+    temperature: float = 0.2
+
+
+class ChatResp(BaseModel):
+    answer: str
+    citations: List[str]
+    model: str
 
 
 class ProcessReq(BaseModel):
@@ -545,6 +599,70 @@ def search_endpoint(req: SearchReq):
     ]
     hits.sort(key=lambda h: h["score"], reverse=True)
     return {"hits": hits[: req.k]}
+
+
+@app.post("/ml/chat", response_model=ChatResp, dependencies=[Depends(require_key)])
+def chat_endpoint(req: ChatReq):
+    """Stateless RAG chat.
+
+    Caller (backend) sends the user's question plus the spans it has already
+    retrieved as context. ML builds a grounded prompt, calls the LLM, and
+    returns the answer plus any cited span ids it referenced.
+    """
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="question is required")
+
+    client, model = _get_llm()
+
+    context_blocks = []
+    allowed_ids = set()
+    for s in req.spans[:20]:  # cap context size
+        sid = s.id
+        allowed_ids.add(sid)
+        snippet = (s.text or "").strip().replace("\r", " ")
+        if len(snippet) > 1200:
+            snippet = snippet[:1200] + "…"
+        context_blocks.append(f"[S#{sid}]\n{snippet}")
+    context_text = "\n\n".join(context_blocks) if context_blocks else "(no relevant notes were found)"
+
+    system_prompt = (
+        "You are a research assistant for a personal knowledge base. "
+        "Answer the user's question using ONLY the facts in the numbered context blocks below. "
+        "When you use a fact, cite its id in square brackets exactly as shown, e.g. [S#abc123]. "
+        "If the context does not contain the answer, say so plainly and do not fabricate details. "
+        "Be concise: 1-4 short paragraphs or a short bulleted list."
+    )
+    user_prompt = (
+        f"Context:\n{context_text}\n\n"
+        f"Question: {req.question.strip()}\n\n"
+        "Answer (with inline citations like [S#...]):"
+    )
+
+    messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    for m in (req.history or [])[-8:]:
+        messages.append({"role": m.role, "content": m.content})
+    messages.append({"role": "user", "content": user_prompt})
+
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=req.temperature,
+            max_tokens=req.max_tokens,
+        )
+        answer = (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
+
+    cited = []
+    seen = set()
+    for m in re.finditer(r"\[S#([^\]\s]+)\]", answer):
+        sid = m.group(1)
+        if sid in allowed_ids and sid not in seen:
+            seen.add(sid)
+            cited.append(sid)
+
+    return {"answer": answer, "citations": cited, "model": model}
 
 
 @app.post("/ml/notes/process", response_model=ProcessResp, dependencies=[Depends(require_key)])
